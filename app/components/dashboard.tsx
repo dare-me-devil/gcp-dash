@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Highcharts from "highcharts";
 import HighchartsReact from "highcharts-react-official";
-import { AlertCircle, Cloud, Database, RefreshCw } from "lucide-react";
+import { AlertCircle, Cloud, RefreshCw } from "lucide-react";
 
+import { fetchBillingSnapshot } from "@/app/lib-simulated-bigquery";
 import { BillingSnapshot, TimeRange } from "@/app/types/billing";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,79 +20,24 @@ const rangeLabels: Record<TimeRange, string> = {
 
 const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 
-interface SettingsPayload {
-  projectId: string;
-  dataset: string;
-  table: string;
-  serviceAccountJson: string;
-}
-
 export function BillingDashboard() {
   const [range, setRange] = useState<TimeRange>("7d");
   const [snapshot, setSnapshot] = useState<BillingSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [source, setSource] = useState<"simulated" | "bigquery">("simulated");
-  const [isConfigured, setIsConfigured] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [savingSettings, setSavingSettings] = useState(false);
-  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
-  const [settings, setSettings] = useState<SettingsPayload>({
-    projectId: "",
-    dataset: "",
-    table: "",
-    serviceAccountJson: ""
-  });
-
-  const loadSettings = useCallback(async () => {
-    const response = await fetch("/api/settings");
-    if (!response.ok) {
-      return;
-    }
-
-    const data = (await response.json()) as {
-      projectId?: string;
-      dataset?: string;
-      table?: string;
-      isConfigured: boolean;
-    };
-
-    if (data.isConfigured) {
-      setIsConfigured(true);
-      setSettings((prev) => ({
-        ...prev,
-        projectId: data.projectId ?? "",
-        dataset: data.dataset ?? "",
-        table: data.table ?? ""
-      }));
-    }
-  }, []);
 
   const loadData = useCallback(async (selectedRange: TimeRange) => {
     setLoading(true);
     setError(null);
-
     try {
-      const response = await fetch(`/api/billing?range=${selectedRange}`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message ?? "Failed to load billing data");
-      }
-
-      setSnapshot(data.snapshot as BillingSnapshot);
-      setSource(data.source as "simulated" | "bigquery");
-      setIsConfigured(Boolean(data.isConfigured));
+      const data = await fetchBillingSnapshot(selectedRange);
+      setSnapshot(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load billing data");
     } finally {
       setLoading(false);
     }
   }, []);
-
-  useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
 
   useEffect(() => {
     void loadData(range);
@@ -114,8 +60,14 @@ export function BillingDashboard() {
       chart: { type: "spline", backgroundColor: "transparent", height: 300 },
       title: { text: undefined },
       credits: { enabled: false },
-      xAxis: { type: "datetime", labels: { style: { color: "#64748b" } } },
-      yAxis: { title: { text: "Cost (USD)" }, labels: { formatter() { return `$${this.value}`; } } },
+      xAxis: {
+        type: "datetime",
+        labels: { style: { color: "#64748b" } }
+      },
+      yAxis: {
+        title: { text: "Cost (USD)" },
+        labels: { formatter() { return `$${this.value}`; } }
+      },
       tooltip: { valuePrefix: "$", valueDecimals: 2 },
       series: [
         {
@@ -148,40 +100,12 @@ export function BillingDashboard() {
     };
   }, [snapshot]);
 
-  async function handleSaveSettings(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSavingSettings(true);
-    setSettingsMessage(null);
-
-    try {
-      const response = await fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings)
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message ?? "Unable to save settings");
-      }
-
-      setIsConfigured(true);
-      setShowSettings(false);
-      setSettingsMessage("Connection saved locally. Fetching BigQuery data now...");
-      await loadData(range);
-    } catch (err) {
-      setSettingsMessage(err instanceof Error ? err.message : "Unable to save settings");
-    } finally {
-      setSavingSettings(false);
-    }
-  }
-
   return (
     <main className="mx-auto min-h-screen max-w-7xl space-y-6 p-4 md:p-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Google Cloud Billing Dashboard</h1>
-          <p className="text-sm text-slate-600">Easiest path: save service-account config once, then query BigQuery via Next.js routes.</p>
+          <p className="text-sm text-slate-600">Real-time cost visibility with simulated BigQuery queries.</p>
         </div>
         <div className="flex items-center gap-3">
           <Cloud className="h-5 w-5 text-blue-600" />
@@ -195,49 +119,8 @@ export function BillingDashboard() {
               { value: "30d", label: "Last 30 days" }
             ]}
           />
-          <button
-            className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
-            onClick={() => setShowSettings((prev) => !prev)}
-            type="button"
-          >
-            <span className="inline-flex items-center gap-2"><Database className="h-4 w-4" /> BigQuery Setup</span>
-          </button>
         </div>
       </header>
-
-      <Card className="border-blue-100 bg-blue-50">
-        <CardContent className="pt-6 text-sm text-slate-700">
-          <p>
-            <strong>Selected integration approach (easiest):</strong> put your service account JSON + billing export table details once.
-            The app stores it locally on this machine and queries BigQuery server-side through Next.js API routes.
-          </p>
-          <p className="mt-2">
-            Data source: <Badge variant="secondary">{source === "bigquery" ? "Live BigQuery" : "Simulated fallback"}</Badge>
-            {!isConfigured ? <span className="ml-2 text-amber-700">(BigQuery not configured yet)</span> : null}
-          </p>
-        </CardContent>
-      </Card>
-
-      {showSettings ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Connect BigQuery</CardTitle>
-            <CardDescription>Paste your credentials once. They are stored locally and reused after refresh.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form className="space-y-3" onSubmit={handleSaveSettings}>
-              <input className="w-full rounded-md border p-2 text-sm" placeholder="Project ID" value={settings.projectId} onChange={(e) => setSettings((p) => ({ ...p, projectId: e.target.value }))} />
-              <input className="w-full rounded-md border p-2 text-sm" placeholder="Dataset (billing export dataset)" value={settings.dataset} onChange={(e) => setSettings((p) => ({ ...p, dataset: e.target.value }))} />
-              <input className="w-full rounded-md border p-2 text-sm" placeholder="Table (billing export table)" value={settings.table} onChange={(e) => setSettings((p) => ({ ...p, table: e.target.value }))} />
-              <textarea className="min-h-40 w-full rounded-md border p-2 font-mono text-xs" placeholder="Paste service account JSON" value={settings.serviceAccountJson} onChange={(e) => setSettings((p) => ({ ...p, serviceAccountJson: e.target.value }))} />
-              <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50" disabled={savingSettings} type="submit">
-                {savingSettings ? "Saving..." : "Save and Connect"}
-              </button>
-            </form>
-            {settingsMessage ? <p className="mt-3 text-sm text-slate-700">{settingsMessage}</p> : null}
-          </CardContent>
-        </Card>
-      ) : null}
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Total Cost" value={snapshot ? currency.format(snapshot.metrics.totalCost) : "--"} />
